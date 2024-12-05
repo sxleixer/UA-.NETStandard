@@ -220,13 +220,12 @@ namespace Opc.Ua.Bindings
         /// The method creates a new instance of a UA-TCP message socket
         /// </summary>
         /// <returns> the message socket</returns>
-        public IMessageSocket Create(
-                IMessageSink sink,
-                BufferManager bufferManager,
-                int receiveBufferSize
-            )
+        public IMessageSocket Create(IMessageSink sink,
+            BufferManager bufferManager,
+            int receiveBufferSize,
+            MessageTransportMode transportMode = MessageTransportMode.DataEfficient)
         {
-            return new TcpMessageSocket(sink, bufferManager, receiveBufferSize);
+            return new TcpMessageSocket(sink, bufferManager, receiveBufferSize, transportMode);
         }
 
         /// <summary>
@@ -248,7 +247,8 @@ namespace Opc.Ua.Bindings
         public TcpMessageSocket(
             IMessageSink sink,
             BufferManager bufferManager,
-            int receiveBufferSize)
+            int receiveBufferSize,
+            MessageTransportMode transportMode = MessageTransportMode.DataEfficient)
         {
             if (bufferManager == null) throw new ArgumentNullException(nameof(bufferManager));
 
@@ -256,6 +256,7 @@ namespace Opc.Ua.Bindings
             m_socket = null;
             m_bufferManager = bufferManager;
             m_receiveBufferSize = receiveBufferSize;
+            m_transportMode = transportMode;
             m_incomingMessageSize = -1;
             m_readComplete = OnReadComplete;
             m_readState = ReadState.Ready;
@@ -416,7 +417,7 @@ namespace Opc.Ua.Bindings
                         m_receiveBuffer = m_bufferManager.TakeBuffer(m_receiveBufferSize, "ReadNextMessage");
                     }
 
-                    // read the first 8 bytes of the message which contains the message size.          
+                    // read the first 8 bytes of the message which contains the message size.
                     m_bytesReceived = 0;
                     m_bytesToReceive = TcpMessageLimits.MessageTypeAndSize;
                     m_incomingMessageSize = -1;
@@ -457,7 +458,10 @@ namespace Opc.Ua.Bindings
                     // after processing the ReadComplete and let the outer call handle it
                     if (!innerCall && !ServiceResult.IsBad(error))
                     {
-                        while (ReadNext()) ;
+                        while (ReadNext())
+                        {
+                            // Read the next block
+                        }
                     }
                 }
                 catch (Exception ex)
@@ -530,7 +534,7 @@ namespace Opc.Ua.Bindings
             // start reading the message body.
             if (m_incomingMessageSize < 0)
             {
-                UInt32 messageType = BitConverter.ToUInt32(m_receiveBuffer, 0);
+                uint messageType = BitConverter.ToUInt32(m_receiveBuffer, 0);
                 if (!TcpMessageType.IsValid(messageType))
                 {
                     m_readState = ReadState.Error;
@@ -567,7 +571,7 @@ namespace Opc.Ua.Bindings
                 try
                 {
                     // send notification (implementor responsible for freeing buffer) on success.
-                    ArraySegment<byte> messageChunk = new ArraySegment<byte>(m_receiveBuffer, 0, m_incomingMessageSize);
+                    var messageChunk = new ArraySegment<byte>(m_receiveBuffer, 0, m_incomingMessageSize);
 
                     // must allocate a new buffer for the next message.
                     m_receiveBuffer = null;
@@ -648,7 +652,7 @@ namespace Opc.Ua.Bindings
         }
 
         /// <summary>
-        /// Helper to read read next block or message based on current state.
+        /// Helper to read the next block or message based on current state.
         /// </summary>
         private bool ReadNext()
         {
@@ -670,35 +674,13 @@ namespace Opc.Ua.Bindings
         /// <summary>
         /// Try to connect to endpoint and do callback if connected successfully
         /// </summary>
-        /// <param name="address">Endpoint address</param>
-        /// <param name="addressFamily">Endpoint address family</param>
-        /// <param name="port">Endpoint port</param>
-        /// <param name="callback">Callback that must be executed if the connection would be established</param>
-        private SocketError BeginConnect(IPAddress address, AddressFamily addressFamily, int port, CallbackAction callback)
-        {
-            var socket = new Socket(addressFamily, SocketType.Stream, ProtocolType.Tcp);
-            var args = new SocketAsyncEventArgs() {
-                UserToken = callback,
-                RemoteEndPoint = new IPEndPoint(address, port),
-            };
-            args.Completed += OnSocketConnected;
-            if (!socket.ConnectAsync(args))
-            {
-                // I/O completed synchronously
-                OnSocketConnected(socket, args);
-                return args.SocketError;
-            }
-            return SocketError.InProgress;
-        }
-
-        /// <summary>
-        /// Try to connect to endpoint and do callback if connected successfully
-        /// </summary>
         /// <param name="endpoint">The DNS endpoint</param>
         /// <param name="callback">Callback that must be executed if the connection would be established</param>
         private SocketError BeginConnect(DnsEndPoint endpoint, CallbackAction callback)
         {
-            var socket = new Socket(SocketType.Stream, ProtocolType.Tcp);
+            var socket = new Socket(SocketType.Stream, ProtocolType.Tcp) {
+                NoDelay = m_transportMode == MessageTransportMode.TimeCritical
+            };
             var args = new SocketAsyncEventArgs() {
                 UserToken = callback,
                 RemoteEndPoint = endpoint,
@@ -792,6 +774,7 @@ namespace Opc.Ua.Bindings
         private IMessageSink m_sink;
         private BufferManager m_bufferManager;
         private readonly int m_receiveBufferSize;
+        private readonly MessageTransportMode m_transportMode;
         private readonly EventHandler<SocketAsyncEventArgs> m_readComplete;
 
         private readonly object m_socketLock = new object();
